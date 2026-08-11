@@ -1,0 +1,13 @@
+opencv-python==4.13.0.92
+# scipy (pulled in by supervision) requires numpy>=1.26.4,<2.7.0, and
+# opencv-python 4.13 requires numpy>=2, so numpy stays on the 2.4 line.
+# 2.7.0 is scipy's exclusive upper bound, not an installable release.
+numpy==2.4.4
+scipy==1.17.0
+Pillow==12.3.0
+pynput==1.8.2
+mss==10.2.0
+PyWinCtl==0.4.1
+pywin32==306; sys_platform == "win32"
+requests==2.34.0
+supervision==0.28.0
