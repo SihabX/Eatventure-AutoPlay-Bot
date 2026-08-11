@@ -1,4 +1,4 @@
-# Eatventure Autobot V2
+# Eatventure-AutoPlay-Bot
 
 Eatventure Autobot is a Python-powered automation tool designed for the popular mobile game *Eatventure*. By leveraging advanced computer vision, state-machine logic, and adaptive AI learning, the bot autonomously manages restaurant completions with high precision and human-like interaction patterns.
 
