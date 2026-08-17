@@ -186,6 +186,14 @@ UNLOCK_THRESHOLD = 0.905
 # Template confidence threshold for new-level button scans.
 NEW_LEVEL_THRESHOLD = 0.965
 
+# Vertical padding around the last known new-level button center. Scans probe
+# that band before falling back to the full frame. 0 disables the shortcut.
+NEW_LEVEL_BUTTON_SEARCH_PAD = 80
+
+# Full-frame sweeps run on the first band miss after a hit and every Nth miss
+# after that, so repeated misses stay cheaper than a plain full-frame scan.
+NEW_LEVEL_BUTTON_FULL_SCAN_INTERVAL = 4
+
 # Minimum red icon templates that must agree outside fast mode.
 RED_ICON_MIN_MATCHES = 4
 
@@ -409,7 +417,7 @@ ADAPTIVE_TUNER_MAX_SEARCH_INTERVAL = 1.0
 # Historical Learning
 
 # Enables historical learning from completed levels.
-AI_LEARNING_ENABLED = False
+AI_LEARNING_ENABLED = True
 
 # Path for persisted historical learning state.
 AI_LEARNING_STATE_FILE = "memory/learning_state_stable.json"

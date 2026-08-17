@@ -43,8 +43,10 @@ from domain import (
     SUCCESSFUL_ROW_DEDUP_DISTANCE_PIXELS,
     TRANSITION_LEVEL_BUTTON_WAIT_SECONDS,
     TRANSITION_LEVEL_RETRY_DELAY_SECONDS,
+    TRANSITION_LEVEL_TRIGGERED_SEARCH_SECONDS,
     UPGRADE_STATION_HOLD_MAX_VERIFY_INTERVAL,
     UPGRADE_STATION_HOLD_MIN_VERIFY_INTERVAL,
+    UPGRADE_STATION_STRICT_SEARCH_ATTEMPTS,
     UPGRADE_STATION_THRESHOLD_RELAXATION,
     UPGRADE_STATS_CYCLE_INTERVAL,
     WAIT_FOR_UNLOCK_POST_CLICK_DELAY,
@@ -556,6 +558,9 @@ class EatventureBot:
         self.scroll_direction = 1
         self.scroll_cycle_index = 1
         self.scroll_cycle_progress = 0
+        self.level_transition_deadline: float | None = None
+        self.last_new_level_button_center: tuple[int, int] | None = None
+        self.new_level_band_misses = 0
         self._window_pause_reason: str | None = None
 
     def load_templates(self) -> dict[str, TemplatePair]:
@@ -906,13 +911,71 @@ class EatventureBot:
         if template_pair is None:
             return False, 0.0, 0, 0
         template, mask = template_pair
-        return self.image_matcher.find_template(
+        band = self._new_level_search_band(screenshot, template)
+        if band is not None:
+            top, bottom = band
+            found, confidence, x, y = self.image_matcher.find_template(
+                screenshot[top:bottom, :],
+                template,
+                mask=mask,
+                threshold=config.NEW_LEVEL_THRESHOLD,
+                template_name=TemplateName.NEW_LEVEL.value,
+            )
+            if found:
+                self.new_level_band_misses = 0
+                self.last_new_level_button_center = (x, y + top)
+                return found, confidence, x, y + top
+            self.new_level_band_misses += 1
+            if not self._full_new_level_sweep_due():
+                return False, confidence, 0, 0
+        found, confidence, x, y = self.image_matcher.find_template(
             screenshot,
             template,
             mask=mask,
             threshold=config.NEW_LEVEL_THRESHOLD,
             template_name=TemplateName.NEW_LEVEL.value,
         )
+        if found:
+            self.new_level_band_misses = 0
+            self.last_new_level_button_center = (x, y)
+        return found, confidence, x, y
+
+    def _new_level_search_band(
+        self, screenshot: Any, template: Any
+    ) -> tuple[int, int] | None:
+        """Vertical slice around the last known button center.
+
+        The button renders at a near-fixed spot (105 of 106 logged hits landed
+        within one pixel of each other), so probing that band first avoids
+        matching the full frame on every transition poll.
+        """
+        if self.last_new_level_button_center is None:
+            return None
+        pad = int(config.NEW_LEVEL_BUTTON_SEARCH_PAD)
+        if pad <= 0:
+            return None
+        try:
+            height = int(screenshot.shape[0])
+            template_height = int(template.shape[0])
+        except (AttributeError, IndexError, TypeError, ValueError):
+            return None
+        center_y = self.last_new_level_button_center[1]
+        top = max(0, center_y - pad)
+        bottom = min(height, center_y + pad)
+        if bottom - top < template_height or bottom - top >= height:
+            return None
+        return top, bottom
+
+    def _full_new_level_sweep_due(self) -> bool:
+        """Throttle full-frame sweeps so band misses stay cheap.
+
+        A miss is the common case, and paying for band plus full frame every
+        time would be slower than the plain full-frame scan. Sweeping on the
+        first miss after a hit and every Nth miss afterwards still re-anchors
+        the band if the button ever moves.
+        """
+        interval = max(1, int(config.NEW_LEVEL_BUTTON_FULL_SCAN_INTERVAL))
+        return self.new_level_band_misses % interval == 1 % interval
 
     def _find_zone_red_icon(
         self, screenshot: Any, zone: tuple[int, int, int, int], threshold: float
@@ -1235,6 +1298,7 @@ class EatventureBot:
         self.scroll_direction = 1
         self.scroll_cycle_index = 1
         self.scroll_cycle_progress = 0
+        self.level_transition_deadline = None
 
     def _scroll(self) -> bool:
         distance = round(
@@ -1389,7 +1453,7 @@ class EatventureBot:
         for attempt in range(MAX_UPGRADE_SEARCH_ATTEMPTS):
             threshold = (
                 base_threshold
-                if attempt < UPGRADE_STATS_CYCLE_INTERVAL
+                if attempt < UPGRADE_STATION_STRICT_SEARCH_ATTEMPTS
                 else relaxed_threshold
             )
             match = self._find_upgrade_station(threshold)
@@ -1620,20 +1684,35 @@ class EatventureBot:
         if not level_transition_confirmation_clicked:
             return State.CHECK_NEW_LEVEL
 
+        self.level_transition_deadline = (
+            time.monotonic() + TRANSITION_LEVEL_TRIGGERED_SEARCH_SECONDS
+        )
         return State.TRANSITION_LEVEL
 
     def handle_transition_level(self) -> StateResult:
         if not self._click_idle():
             return State.CHECK_NEW_LEVEL
-        for attempt in range(MAX_LEVEL_TRANSITION_ATTEMPTS):
+        search_deadline = self.level_transition_deadline
+        self.level_transition_deadline = None
+        search_started_at = time.monotonic()
+        attempt = 0
+        while True:
+            attempt += 1
             found, _, x, y = self._find_new_level_button(
                 self.window_capture.capture(max_y=config.MAX_SEARCH_Y)
             )
             if found:
+                waited = time.monotonic() - search_started_at
                 if not self.input_controller.click(x, y, relative=True):
                     return State.CHECK_NEW_LEVEL
                 if not self._sleep(TRANSITION_LEVEL_BUTTON_WAIT_SECONDS):
                     return State.CHECK_NEW_LEVEL
+                if attempt > MAX_LEVEL_TRANSITION_ATTEMPTS:
+                    logger.info(
+                        "New level button appeared after %.1fs of polling (attempt %s)",
+                        waited,
+                        attempt,
+                    )
                 elapsed = self._record_level_completion("transition")
                 logger.info(
                     "Level %s completed. Time spent: %.1fs",
@@ -1641,11 +1720,18 @@ class EatventureBot:
                     elapsed,
                 )
                 return State.WAIT_FOR_UNLOCK
-            if attempt < MAX_LEVEL_TRANSITION_ATTEMPTS - 1 and not self._sleep(
-                TRANSITION_LEVEL_RETRY_DELAY_SECONDS
-            ):
+            within_extended_window = (
+                search_deadline is not None and time.monotonic() < search_deadline
+            )
+            if attempt >= MAX_LEVEL_TRANSITION_ATTEMPTS and not within_extended_window:
+                break
+            if not self._sleep(TRANSITION_LEVEL_RETRY_DELAY_SECONDS):
                 return State.CHECK_NEW_LEVEL
-        logger.warning("New level button not found after transition attempts")
+        logger.warning(
+            "New level button not found after %s attempts (%.1fs)",
+            attempt,
+            time.monotonic() - search_started_at,
+        )
         self._reset_search_cycle()
         return State.FIND_RED_ICONS
 

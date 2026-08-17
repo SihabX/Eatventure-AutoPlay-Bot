@@ -65,10 +65,15 @@ def _create_screenshotter() -> Any:
         raise WindowCaptureError(
             f"Cannot initialize screenshot backend: {_MSS_IMPORT_ERROR}"
         )
+    # mss 10.x renamed the class to MSS and deprecated the lowercase alias,
+    # which it drops in a future release.
+    factory = getattr(mss_module, "MSS", None) or mss_module.mss
     try:
-        return mss_module.mss()
+        return factory()
     except Exception as exc:
-        raise WindowCaptureError(f"Cannot initialize screenshot backend: {exc}") from exc
+        raise WindowCaptureError(
+            f"Cannot initialize screenshot backend: {exc}"
+        ) from exc
 
 
 def _close_screenshotter(screenshotter: Any) -> None:
@@ -149,6 +154,7 @@ class WindowCapture:
         # None until the backend has been probed against the live window.
         self._window_backend_enabled: bool | None = None
         self._window_backend_failures = 0
+        self._reported_client_size: tuple[int, int] | None = None
         self._screenshotter: Any = None
         self._resolve_window_backend()
         if self._backend != CAPTURE_BACKEND_WINDOW:
@@ -278,17 +284,27 @@ class WindowCapture:
             return
         if width == self.target_width and height == self.target_height:
             return
+        if self._reported_client_size == (width, height):
+            return
+        self._reported_client_size = (width, height)
+        # resizeTo sets the outer window size, so the client area comes out
+        # smaller by the border and title bar. Capture and click coordinates
+        # both live in client space, so they must be calibrated against this
+        # size rather than the configured one -- the difference below is the
+        # window chrome, not an error to correct in the coordinates.
         logger.info(
-            "Window '%s' client area is %sx%s while configuration assumes %sx%s; "
-            "capture and coordinates both use the client area, so configured "
-            "positions land about %.0f%% off along x and %.0f%% off along y",
+            "Window '%s' client area is %sx%s after resizing the frame to %sx%s "
+            "(%s x %s of window chrome); coordinates are client-relative and "
+            "must be calibrated to %sx%s",
             self.window_title,
             width,
             height,
             self.target_width,
             self.target_height,
-            abs(1.0 - width / self.target_width) * 100.0,
-            abs(1.0 - height / self.target_height) * 100.0,
+            self.target_width - width,
+            self.target_height - height,
+            width,
+            height,
         )
 
     def find_window(self) -> Any:
@@ -308,7 +324,10 @@ class WindowCapture:
             window = self.ensure_window()
             x, y, width, height = self._window_bounds(window)
             if width <= 0 or height <= 0:
-                raise WindowCaptureError(
+                # A window reports a degenerate rect while minimized or mid
+                # restore, which the user can undo, so this is a pause signal
+                # rather than a fatal capture failure.
+                raise WindowNotAvailableError(
                     f"Window '{self.window_title}' has invalid size: {width}x{height}"
                 )
             return x, y, width, height
@@ -508,7 +527,7 @@ class WindowCapture:
         if max_y is not None:
             height = min(height, int(max_y))
         if width <= 0 or height <= 0:
-            raise WindowCaptureError(
+            raise WindowNotAvailableError(
                 f"Window '{self.window_title}' cannot be captured with size "
                 f"{width}x{height}"
             )

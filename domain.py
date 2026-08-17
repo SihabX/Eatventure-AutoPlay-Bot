@@ -75,11 +75,22 @@ UPGRADE_STATION_THRESHOLD_RELAXATION = 0.05
 UPGRADE_STATION_HOLD_MIN_VERIFY_INTERVAL = 0.05
 UPGRADE_STATION_HOLD_MAX_VERIFY_INTERVAL = 0.20
 UPGRADE_STATS_CYCLE_INTERVAL = 2
+# Search attempts made at the strict threshold before relaxing it. Consecutive
+# attempts are only ~5ms apart, so repeating the same threshold re-scans a
+# near-identical frame; 95% of hits land on the first attempt and the rest come
+# from the background tracker refreshing, so the second attempt is spent on the
+# relaxed threshold instead of a duplicate.
+UPGRADE_STATION_STRICT_SEARCH_ATTEMPTS = 1
 
 BOT_STATE_LOOP_SLEEP_SECONDS = 0.10
 CHECK_NEW_LEVEL_PRE_CLICK_DELAY = 0.05
 TRANSITION_LEVEL_BUTTON_WAIT_SECONDS = 1.00
 TRANSITION_LEVEL_RETRY_DELAY_SECONDS = 0.20
+# The new-level button only renders once the game finishes its transition
+# animation, measured at 6.7-8.4s after the new-level red icon is detected.
+# MAX_LEVEL_TRANSITION_ATTEMPTS alone covers ~2.5s, so a triggered transition
+# gets this extra polling budget instead of falling back to a full rescan.
+TRANSITION_LEVEL_TRIGGERED_SEARCH_SECONDS = 9.00
 WAIT_FOR_UNLOCK_PRE_SCAN_DELAY = 0.05
 WAIT_FOR_UNLOCK_RETRY_DELAY = 0.30
 WAIT_FOR_UNLOCK_POST_CLICK_DELAY = 0.50
